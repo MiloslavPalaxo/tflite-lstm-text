@@ -76,7 +76,7 @@ class UnidirectionalSequenceLstmTest(test_util.TensorFlowTestCase):
         self.vocab_len = np.max(self.train_data)+1
 
         # Define constants
-        # Unrolled through 28 time steps
+        # Unrolled through 100 time steps
         self.time_steps = 100
         # Learning rate for Adam optimizer
         self.learning_rate = 0.001
@@ -115,28 +115,57 @@ class UnidirectionalSequenceLstmTest(test_util.TensorFlowTestCase):
         sentences = tf.placeholder(
             tf.int32, [None, self.time_steps], name="INPUT_TEXT")
 
-        lengths = tf.placeholder(tf.int32, [None], name="INPUT_LENGTH")
+        lengths2 = tf.placeholder(tf.int32, [None], name="INPUT_LENGTH")
 
         encoder_emb_inp = tf.nn.embedding_lookup(enc_embedding, sentences)
 
         # x is shaped [batch_size,time_steps,num_inputs]
         if is_dynamic_rnn:
             lstm_input = tf.transpose(encoder_emb_inp, perm=[1, 0, 2])
+            # outputs, _ = tf.lite.experimental.nn.dynamic_rnn(
+            #     lstm_layer, lstm_input, sequence_length=lengths, dtype="float32")
             outputs, _ = tf.lite.experimental.nn.dynamic_rnn(
-                lstm_layer, lstm_input, sequence_length=lengths, dtype="float32")
-            outputs = tf.unstack(outputs, axis=0)
+                lstm_layer, lstm_input, dtype="float32")
+
+            batch_size = tf.shape(outputs)[1]
+            # lengths = tf.minimum(lengths, tf.tile([self.time_steps],[batch_size]))
+            # lengths = tf.minimum(lengths, tf.constant([self.time_steps], dtype=tf.int32))
+            # lengths2 = tf.maximum(lengths, tf.constant([200], dtype=tf.int32))
+            lengths = tf.minimum(lengths2, self.time_steps)
+            # lengths = tf.reduce_min(tf.stack([lengths, tf.tile([self.time_steps], [batch_size])]), axis=0)
+            outputs = tf.gather_nd(outputs, tf.transpose(tf.stack([lengths-1, tf.range(batch_size)])))
+            # outputs = tf.transpose(outputs, perm=[1, 0, 2])
+
+
+
+        # outputs = tf.unstack(outputs, axis=0)
         else:
             lstm_input = tf.unstack(encoder_emb_inp, self.time_steps, 1)
-            outputs, _ = tf.nn.static_rnn(lstm_layer, lstm_input, sequence_length=lengths,  dtype="float32")
+            outputs, _ = tf.nn.static_rnn(lstm_layer, lstm_input,  dtype="float32")
+            outputs = outputs[-1]
+            # outputs, _ = tf.nn.static_rnn(lstm_layer, lstm_input, sequence_length=lengths,  dtype="float32")
 
-        # Compute logits by multiplying outputs[-1] of shape [batch_size,num_units]
+
+        # outputs = tf.transpose(outputs, [1, 0, 2])
+        #
+        # # outputs is [batch_size, L, N] where L is the maximal sequence length and N
+        # # the number of nodes in the last layer.
+        # mask = tf.tile(
+        #     tf.expand_dims(tf.sequence_mask(lengths, tf.shape(outputs)[1]), 2),
+        #     [1, 1, tf.shape(outputs)[2]])
+        # zero_outside = tf.where(mask, outputs, tf.zeros_like(outputs))
+        #
+        # lstm_out = tf.reduce_sum(zero_outside, axis=1)
+
+
+    # Compute logits by multiplying outputs[-1] of shape [batch_size,num_units]
         # by the softmax layer's out_weight of shape [num_units,n_classes]
         # plus out_bias
         # TODO: change to last_encoder_state !!
-        prediction = tf.matmul(outputs[-1], out_weights) + out_bias
+        prediction = tf.matmul(outputs, out_weights) + out_bias
         output_class = tf.nn.softmax(prediction, name="OUTPUT_CLASS")
 
-        return sentences, lengths, prediction, output_class
+        return sentences, lengths2, prediction, output_class
 
     def trainModel(self, sentences, lengths, prediction, output_class, sess):
         batch_input = BatchInput(self.train_data, self.batch_size, True)
